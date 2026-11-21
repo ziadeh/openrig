@@ -745,9 +745,61 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
         isPaneDead: vi.fn(async () => true),
         getDefaultShell: vi.fn(async () => "/bin/zsh"),
         respawnPane: vi.fn(async () => ({ ok: true as const })),
+        setSessionEnv: vi.fn(async () => undefined),
+        unsetSessionEnv: vi.fn(async () => undefined),
       });
       return live;
     }
+
+    it("#3677: names the new occupant in the session's environment once the shell is respawned, before the seat is launched", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      const before = sessionRegistry.currentOccupantTenure(nodeIds[0]!)!.generationUuid;
+      const order: string[] = [];
+      (tmux as any).respawnPane.mockImplementation(async () => { order.push("respawn"); return { ok: true as const }; });
+      (tmux as any).setSessionEnv.mockImplementation(async (_s: string, key: string) => { order.push(key); });
+      const adapter = readyAdapter("claude-code");
+      adapter.launchHarness.mockImplementation(async () => { order.push("launch"); return { ok: true as const }; });
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": adapter }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver" })]);
+      const live = sessionRegistry.currentOccupantTenure(nodeIds[0]!)!.generationUuid;
+      expect(live).not.toBe(before);
+      expect((tmux as any).setSessionEnv).toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_OCCUPANT_GENERATION", live);
+      expect((tmux as any).setSessionEnv).toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_NODE_ID", nodeIds[0]);
+      expect((tmux as any).setSessionEnv).toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_SESSION_NAME", "dev-driver@test-rig");
+      expect(order).toEqual(["respawn", "OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION", "launch"]);
+    });
+
+    it("#3677: with no generation from the ledger, the earlier occupant's is unset, not left for the launch to export", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      vi.spyOn(sessionRegistry, "reserveOccupantGeneration").mockReturnValue(null);
+      const adapter = readyAdapter("claude-code");
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": adapter }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver" })]);
+      expect((tmux as any).unsetSessionEnv).toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_OCCUPANT_GENERATION");
+      expect((tmux as any).setSessionEnv).not.toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_OCCUPANT_GENERATION", expect.anything());
+      expect((tmux as any).setSessionEnv).toHaveBeenCalledWith("dev-driver@test-rig", "OPENRIG_NODE_ID", nodeIds[0]);
+    });
+
+    it("#3677: a session environment it can't set still launches the seat, and the warning names what was left", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      (tmux as any).setSessionEnv.mockImplementation(async (_s: string, key: string) => {
+        if (key === "OPENRIG_OCCUPANT_GENERATION") throw new Error("tmux: no server");
+      });
+      const adapter = readyAdapter("claude-code");
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": adapter }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver" })]);
+      expect(adapter.launchHarness).toHaveBeenCalledOnce();
+      const warning = result.warnings?.find((w) => w.includes("earlier occupant"));
+      expect(warning).toContain("OPENRIG_OCCUPANT_GENERATION");
+      expect(warning).not.toContain("OPENRIG_NODE_ID");
+      expect(warning).not.toContain("no server");
+    });
 
     it("ends the seat's process in its own pane and starts a shell there, with no new session, then launches it there", async () => {
       const { rigId, nodeIds } = seedPodAwareRig();

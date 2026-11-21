@@ -8,6 +8,10 @@ import { shellQuote } from "../adapters/shell-quote.js";
 
 // Explicit public launch metadata, not a prefix/denylist over credential names.
 // Provider keys and OPENRIG_ACTIVITY_HOOK_TOKEN keep their non-typed channel.
+/** The seat identity a launch command reads from its tmux session's environment and exports. A launch that keeps an
+ *  existing pane sets these in the session environment too (node-launcher.ts), so the two stay one list. */
+export const SEAT_IDENTITY_ENV_KEYS = ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION"] as const;
+
 export const SEAT_PUBLIC_ENV_KEYS = [
   "OPENRIG_HOME", "OPENRIG_DB", "TMUX_TMPDIR", "OPENRIG_URL", "OPENRIG_HOST", "OPENRIG_PORT",
   "OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME",
@@ -166,7 +170,7 @@ export class SeatLaunchEnvironment {
         throw new Error("Unsupported Pi pane shell");
       }
       const identity: Record<string, string | undefined> = {};
-      for (const key of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION"]) {
+      for (const key of SEAT_IDENTITY_ENV_KEYS) {
         identity[key] = await this.tmux.getSessionEnv(session, key);
       }
       if (!identity.OPENRIG_NODE_ID || !identity.OPENRIG_SESSION_NAME) {
