@@ -121,6 +121,9 @@ export const NO_TERMINAL_LAUNCH_CODES: ReadonlySet<string> = new Set([
   "process_limits_unsupported", "process_limits_setup", "process_limits_invalid",
 ]);
 
+/** The seat identity a launch command reads from the tmux session's environment (seat-launch-environment.ts). */
+const SESSION_IDENTITY_KEYS = ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION"] as const;
+
 export class NodeLauncher {
   readonly db: Database.Database;
   private rigRepo: RigRepository;
@@ -442,7 +445,19 @@ export class NodeLauncher {
     if (!respawned.ok) {
       return { ok: false, code: "pane_not_respawned", message: `The seat's process in pane ${pane} ended, but a shell couldn't start there: ${respawned.message}` };
     }
-    return { ok: true, ...(respawned.warnings ? { warnings: respawned.warnings } : {}),
+    // The new shell has this launch's identity, but the session's environment still names the occupant before it, and a
+    // launch command staged from it (seat-launch-environment.ts) exports those values. Without this, a seat relaunched
+    // in its own pane runs under the earlier occupant generation, and the daemon reads every hook it posts as a dead
+    // occupant's. A new session gets the same values from createSession.
+    const warnings = [...(respawned.warnings ?? [])];
+    const unset: string[] = [];
+    for (const key of SESSION_IDENTITY_KEYS) {
+      const value = env[key];
+      if (value === undefined) continue;
+      try { await this.tmuxAdapter.setSessionEnv(sessionName, key, value); } catch { unset.push(key); }
+    }
+    if (unset.length) warnings.push(`The seat's tmux session still names its earlier occupant for ${unset.join(", ")}: its hooks may read as unknown until its next fresh launch.`);
+    return { ok: true, ...(warnings.length ? { warnings } : {}),
       ...(respawned.ok && respawned.processLimits ? { processLimits: respawned.processLimits } : {}) };
   }
 

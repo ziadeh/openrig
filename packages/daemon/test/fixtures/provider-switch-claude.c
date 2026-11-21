@@ -119,6 +119,13 @@ int main(int argc, char **argv) {
       f = fopen(memoryFile, "w"); if (!f) return 4; fputs(memory, f); fclose(f);
     }
     if (!strcmp(line, "probe")) printf("MEMORY:%s AUTH:%s\n", memory, auth);
+    /* A turn starting, as the provider's UserPromptSubmit hook reports it, through the same relay. */
+    if (!strcmp(line, "busy")) {
+      f = popen(hook, "w");
+      if (!f) return 5;
+      fprintf(f, "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"%s\",\"prompt\":\"busy\"}", id);
+      if (pclose(f) != 0) return 6;
+    }
     puts("❯ ");
   }
   return 0;
